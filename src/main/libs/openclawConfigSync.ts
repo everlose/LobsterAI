@@ -10,8 +10,8 @@ const mapExecutionModeToSandboxMode = (mode: CoworkExecutionMode): 'off' | 'non-
   return 'non-main';
 };
 
-const mapApiTypeToOpenClawApi = (apiType: 'anthropic' | 'openai' | undefined): 'anthropic-messages' | 'openai-responses' => {
-  return apiType === 'openai' ? 'openai-responses' : 'anthropic-messages';
+const mapApiTypeToOpenClawApi = (apiType: 'anthropic' | 'openai' | undefined): 'anthropic-messages' | 'openai-completions' => {
+  return apiType === 'openai' ? 'openai-completions' : 'anthropic-messages';
 };
 
 const ensureDir = (dirPath: string): void => {
