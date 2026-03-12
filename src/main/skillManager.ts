@@ -1525,7 +1525,15 @@ export class SkillManager {
         const eqIdx = trimmed.indexOf('=');
         if (eqIdx < 0) continue;
         const key = trimmed.slice(0, eqIdx).trim();
-        const value = trimmed.slice(eqIdx + 1).trim();
+        let value = trimmed.slice(eqIdx + 1).trim();
+        // Strip surrounding quotes added by setSkillConfig / manual edits.
+        // Double-quoted values may contain escape sequences (\", \\) that need reversal.
+        // Single-quoted values are taken literally (no escape processing), matching dotenv behavior.
+        if (value.startsWith('"') && value.endsWith('"')) {
+          value = value.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+        } else if (value.startsWith("'") && value.endsWith("'")) {
+          value = value.slice(1, -1);
+        }
         config[key] = value;
       }
       return { success: true, config };
@@ -1540,7 +1548,16 @@ export class SkillManager {
       const envPath = path.join(skillDir, '.env');
       const lines = Object.entries(config)
         .filter(([key]) => key.trim())
-        .map(([key, value]) => `${key}=${value}`);
+        .map(([key, value]) => {
+          // Wrap value in double quotes if it contains characters that dotenv
+          // would misinterpret (e.g. # treated as inline comment, or spaces)
+          if (value.includes('#') || value.includes(' ') || value.includes('"') || value.includes("'")) {
+            // Escape any existing double quotes inside the value
+            const escaped = value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+            return `${key}="${escaped}"`;
+          }
+          return `${key}=${value}`;
+        });
       fs.writeFileSync(envPath, lines.join('\n') + '\n', 'utf8');
       return { success: true };
     } catch (error) {
