@@ -63,12 +63,16 @@ const FolderSelectorPopover: React.FC<FolderSelectorPopoverProps> = ({
   const submenuRef = useRef<HTMLDivElement>(null);
   const recentFoldersRef = useRef<HTMLDivElement>(null);
   const tooltipTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const submenuCloseTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Cleanup tooltip timer on unmount
+  // Cleanup timers on unmount
   useEffect(() => {
     return () => {
       if (tooltipTimerRef.current) {
         clearTimeout(tooltipTimerRef.current);
+      }
+      if (submenuCloseTimerRef.current) {
+        clearTimeout(submenuCloseTimerRef.current);
       }
     };
   }, []);
@@ -91,11 +95,15 @@ const FolderSelectorPopover: React.FC<FolderSelectorPopoverProps> = ({
       loadRecentFolders();
     } else {
       setShowRecentSubmenu(false);
-      // Clear tooltip when popover closes
+      // Clear tooltip and submenu timer when popover closes
       setTooltipState({ visible: false, path: '', rect: null });
       if (tooltipTimerRef.current) {
         clearTimeout(tooltipTimerRef.current);
         tooltipTimerRef.current = null;
+      }
+      if (submenuCloseTimerRef.current) {
+        clearTimeout(submenuCloseTimerRef.current);
+        submenuCloseTimerRef.current = null;
       }
     }
   }, [isOpen]);
@@ -190,6 +198,24 @@ const FolderSelectorPopover: React.FC<FolderSelectorPopoverProps> = ({
     return getCompactFolderName(path, maxLength) || i18nService.t('noFolderSelected');
   };
 
+  const handleSubmenuMouseEnter = useCallback(() => {
+    if (submenuCloseTimerRef.current) {
+      clearTimeout(submenuCloseTimerRef.current);
+      submenuCloseTimerRef.current = null;
+    }
+    setShowRecentSubmenu(true);
+  }, []);
+
+  const handleSubmenuMouseLeave = useCallback(() => {
+    if (submenuCloseTimerRef.current) {
+      clearTimeout(submenuCloseTimerRef.current);
+    }
+    submenuCloseTimerRef.current = setTimeout(() => {
+      setShowRecentSubmenu(false);
+      submenuCloseTimerRef.current = null;
+    }, 150);
+  }, []);
+
   if (!isOpen) return null;
 
   return (
@@ -212,8 +238,8 @@ const FolderSelectorPopover: React.FC<FolderSelectorPopoverProps> = ({
         <div
           ref={recentFoldersRef}
           className="relative"
-          onMouseEnter={() => setShowRecentSubmenu(true)}
-          onMouseLeave={() => setShowRecentSubmenu(false)}
+          onMouseEnter={handleSubmenuMouseEnter}
+          onMouseLeave={handleSubmenuMouseLeave}
         >
           <button
             className="w-full flex items-center justify-between gap-3 px-3 py-2.5 text-sm dark:text-claude-darkText text-claude-text dark:hover:bg-claude-darkSurfaceHover hover:bg-claude-surfaceHover transition-colors rounded-b-lg"
@@ -233,8 +259,8 @@ const FolderSelectorPopover: React.FC<FolderSelectorPopoverProps> = ({
           ref={submenuRef}
           className="fixed w-64 max-h-80 overflow-y-auto rounded-lg border dark:border-claude-darkBorder border-claude-border dark:bg-claude-darkSurface bg-claude-surface shadow-lg z-[60]"
           style={{ top: submenuPosition.top, left: submenuPosition.left }}
-          onMouseEnter={() => setShowRecentSubmenu(true)}
-          onMouseLeave={() => setShowRecentSubmenu(false)}
+          onMouseEnter={handleSubmenuMouseEnter}
+          onMouseLeave={handleSubmenuMouseLeave}
         >
           {isLoading ? (
             <div className="px-3 py-2.5 text-sm dark:text-claude-darkTextSecondary text-claude-textSecondary">
