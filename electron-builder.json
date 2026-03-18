@@ -144,16 +144,8 @@
     "icon": "build/icons/win/icon.ico",
     "extraResources": [
       {
-        "from": "vendor/openclaw-runtime/cfmind.tar",
-        "to": "cfmind.tar"
-      },
-      {
-        "from": "build-tar/skills.tar",
-        "to": "skills.tar"
-      },
-      {
-        "from": "build-tar/python-win.tar",
-        "to": "python-win.tar"
+        "from": "build-tar/win-resources.tar",
+        "to": "win-resources.tar"
       },
       {
         "from": "scripts/unpack-cfmind.cjs",

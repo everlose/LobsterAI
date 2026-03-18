@@ -25,52 +25,29 @@
   ${GetTime} "" "L" $3 $4 $5 $6 $7 $8 $9
   FileWrite $2 "extract-done: $5-$4-$3 $6:$7:$8$\r$\n"
 
-  ; ─── Extract Resource Archives from tar ───
-  ; Large resource directories (OpenClaw runtime, SKILLs, Python runtime) are
-  ; shipped as single .tar files instead of thousands of small files.
-  ; NSIS 7z extracts one large file almost instantly; we then unpack each tar
-  ; here using Electron's Node runtime (ELECTRON_RUN_AS_NODE=1).
-  ; This dramatically speeds up the installation on NTFS.
+  ; ─── Extract combined resource archive (win-resources.tar) ───
+  ; All large resource directories (cfmind/, SKILLs/, python-win/) are packed
+  ; into a single tar file. NSIS 7z extracts one large file almost instantly;
+  ; we then unpack the tar here using Electron's Node runtime.
 
   SetDetailsPrint none
 
   System::Call 'Kernel32::SetEnvironmentVariable(t "ELECTRON_RUN_AS_NODE", t "1")i'
 
-  ; --- OpenClaw runtime (cfmind.tar -> cfmind/) ---
   ${GetTime} "" "L" $3 $4 $5 $6 $7 $8 $9
-  FileWrite $2 "tar-cfmind-start: $5-$4-$3 $6:$7:$8$\r$\n"
+  FileWrite $2 "tar-extract-start: $5-$4-$3 $6:$7:$8$\r$\n"
 
-  nsExec::ExecToStack '"$INSTDIR\${APP_EXECUTABLE_FILENAME}" "$INSTDIR\resources\unpack-cfmind.cjs" "$INSTDIR\resources\cfmind.tar" "$INSTDIR\resources\cfmind"'
+  nsExec::ExecToStack '"$INSTDIR\${APP_EXECUTABLE_FILENAME}" "$INSTDIR\resources\unpack-cfmind.cjs" "$INSTDIR\resources\win-resources.tar" "$INSTDIR\resources"'
   Pop $0
   Pop $1
 
-  ${GetTime} "" "L" $3 $4 $5 $6 $7 $8 $9
-  FileWrite $2 "tar-cfmind-done: $5-$4-$3 $6:$7:$8 exit=$0$\r$\n"
-  Delete "$INSTDIR\resources\cfmind.tar"
-
-  ; --- SKILLs (skills.tar -> SKILLs/) ---
-  ${GetTime} "" "L" $3 $4 $5 $6 $7 $8 $9
-  FileWrite $2 "tar-skills-start: $5-$4-$3 $6:$7:$8$\r$\n"
-
-  nsExec::ExecToStack '"$INSTDIR\${APP_EXECUTABLE_FILENAME}" "$INSTDIR\resources\unpack-cfmind.cjs" "$INSTDIR\resources\skills.tar" "$INSTDIR\resources\SKILLs"'
-  Pop $0
-  Pop $1
+  StrCmp $0 "0" TarExtractOK
+    MessageBox MB_OK|MB_ICONEXCLAMATION "Resource extraction returned exit code $0. The application may not work correctly."
+  TarExtractOK:
 
   ${GetTime} "" "L" $3 $4 $5 $6 $7 $8 $9
-  FileWrite $2 "tar-skills-done: $5-$4-$3 $6:$7:$8 exit=$0$\r$\n"
-  Delete "$INSTDIR\resources\skills.tar"
-
-  ; --- Python runtime (python-win.tar -> python-win/) ---
-  ${GetTime} "" "L" $3 $4 $5 $6 $7 $8 $9
-  FileWrite $2 "tar-python-start: $5-$4-$3 $6:$7:$8$\r$\n"
-
-  nsExec::ExecToStack '"$INSTDIR\${APP_EXECUTABLE_FILENAME}" "$INSTDIR\resources\unpack-cfmind.cjs" "$INSTDIR\resources\python-win.tar" "$INSTDIR\resources\python-win"'
-  Pop $0
-  Pop $1
-
-  ${GetTime} "" "L" $3 $4 $5 $6 $7 $8 $9
-  FileWrite $2 "tar-python-done: $5-$4-$3 $6:$7:$8 exit=$0$\r$\n"
-  Delete "$INSTDIR\resources\python-win.tar"
+  FileWrite $2 "tar-extract-done: $5-$4-$3 $6:$7:$8 exit=$0$\r$\n"
+  Delete "$INSTDIR\resources\win-resources.tar"
 
   ; ─── V8 Compile Cache Warmup (silent) ───
   ; After the runtime is extracted, load the gateway bundle once using

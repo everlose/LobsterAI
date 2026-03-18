@@ -115,6 +115,62 @@ function extractTar(tarPath, destDir) {
 
     offset += BLOCK; // Move past header
 
+    if (typeflag === 'L') {
+      // GNU long name extension: the data is the full path for the next entry
+      const longNameBuf = Buffer.alloc(size);
+      fs.readSync(fd, longNameBuf, 0, size, offset);
+      // Remove trailing null
+      let longName = longNameBuf.toString('utf8');
+      if (longName.endsWith('\0')) longName = longName.slice(0, -1);
+      // Skip padding
+      const paddingBytes = (BLOCK - (size % BLOCK)) % BLOCK;
+      offset += size + paddingBytes;
+
+      // Read the actual header that follows
+      fs.readSync(fd, headerBuf, 0, BLOCK, offset);
+      const realSize = parseOctal(headerBuf, 124, 12);
+      const realType = String.fromCharCode(headerBuf[156]);
+      offset += BLOCK;
+
+      const normalizedLongName = longName.replace(/\\/g, '/');
+      if (normalizedLongName.startsWith('/') || normalizedLongName.includes('..')) {
+        const dataBlocks = Math.ceil(realSize / BLOCK);
+        offset += dataBlocks * BLOCK;
+        continue;
+      }
+
+      const longTargetPath = path.join(destDir, normalizedLongName);
+
+      if (realType === '5' || normalizedLongName.endsWith('/')) {
+        if (!createdDirs.has(path.resolve(longTargetPath))) {
+          fs.mkdirSync(longTargetPath, { recursive: true });
+          createdDirs.add(path.resolve(longTargetPath));
+        }
+        totalDirs++;
+      } else if (realType === '0' || realType === '\0') {
+        ensureParentDir(longTargetPath);
+        const writeFd = fs.openSync(longTargetPath, 'w');
+        let remaining = realSize;
+        const CHUNK = 1024 * 1024;
+        while (remaining > 0) {
+          const toRead = Math.min(CHUNK, remaining);
+          const chunk = Buffer.alloc(toRead);
+          fs.readSync(fd, chunk, 0, toRead, offset);
+          fs.writeSync(writeFd, chunk, 0, toRead);
+          offset += toRead;
+          remaining -= toRead;
+        }
+        fs.closeSync(writeFd);
+        const paddingBytesFile = (BLOCK - (realSize % BLOCK)) % BLOCK;
+        offset += paddingBytesFile;
+        totalFiles++;
+      } else {
+        const dataBlocks = Math.ceil(realSize / BLOCK);
+        offset += dataBlocks * BLOCK;
+      }
+      continue;
+    }
+
     if (typeflag === '5' || (typeflag === '0' && name.endsWith('/'))) {
       // Directory
       if (!createdDirs.has(path.resolve(targetPath))) {

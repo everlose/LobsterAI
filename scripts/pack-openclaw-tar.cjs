@@ -34,17 +34,24 @@ function toOctal(num, len) {
 }
 
 function createHeader(name, size, mode, type) {
-  // type: '0' = regular file, '5' = directory
+  // type: '0' = regular file, '5' = directory, 'L' = GNU long name
   const buf = Buffer.alloc(BLOCK, 0);
 
-  // If name > 100 chars, use prefix field (max 155) + name (max 100)
+  // If name fits in 100 bytes, use it directly
+  // If name > 100 but <= 255, try prefix/name split
+  // If name > 255, caller must use GNU long name extension
   let prefix = '';
   let shortName = name;
-  if (Buffer.byteLength(name) > 100) {
+  const nameBytes = Buffer.byteLength(name);
+
+  if (nameBytes > 100) {
     const sepIdx = name.lastIndexOf('/', name.length - 2);
-    if (sepIdx > 0) {
+    if (sepIdx > 0 && Buffer.byteLength(name.slice(sepIdx + 1)) <= 100 && Buffer.byteLength(name.slice(0, sepIdx)) <= 155) {
       prefix = name.slice(0, sepIdx);
       shortName = name.slice(sepIdx + 1);
+    } else {
+      // Truncate to 100 bytes — caller should have used writeLongNameEntry() for this
+      shortName = name.slice(0, 100);
     }
   }
 
@@ -71,6 +78,40 @@ function createHeader(name, size, mode, type) {
   buf[155] = 0x20; // trailing space
 
   return buf;
+}
+
+/**
+ * Write a GNU long name (type 'L') entry for paths that exceed ustar limits.
+ * GNU tar stores the full path as data in a special entry before the real header.
+ */
+function writeLongNameEntry(fd, longName) {
+  const nameData = Buffer.from(longName + '\0', 'utf8');
+  const header = createHeader('././@LongLink', nameData.length, 0, 'L');
+  fs.writeSync(fd, header);
+  fs.writeSync(fd, nameData);
+  // Pad to 512-byte boundary
+  const pad = padBlock(nameData.length);
+  if (pad.length > 0) {
+    fs.writeSync(fd, pad);
+  }
+}
+
+/**
+ * Check if a path needs GNU long name extension.
+ */
+function needsLongName(name) {
+  const nameBytes = Buffer.byteLength(name);
+  if (nameBytes <= 100) return false;
+  // Try prefix/name split
+  const sepIdx = name.lastIndexOf('/', name.length - 2);
+  if (sepIdx > 0) {
+    const shortPart = name.slice(sepIdx + 1);
+    const prefixPart = name.slice(0, sepIdx);
+    if (Buffer.byteLength(shortPart) <= 100 && Buffer.byteLength(prefixPart) <= 155) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function padBlock(size) {
@@ -154,7 +195,11 @@ function packDirectory(sourceDir, outputTar) {
 
       if (entry.isDirectory()) {
         if (shouldExcludeDir(entry.name)) continue;
-        const dirHeader = createHeader(tarPath + '/', 0, 0o755, '5');
+        const dirTarPath = tarPath + '/';
+        if (needsLongName(dirTarPath)) {
+          writeLongNameEntry(fd, dirTarPath);
+        }
+        const dirHeader = createHeader(dirTarPath, 0, 0o755, '5');
         fs.writeSync(fd, dirHeader);
         totalDirs++;
         walk(fullPath, tarPath);
@@ -162,6 +207,9 @@ function packDirectory(sourceDir, outputTar) {
         if (shouldExcludeFile(entry.name)) {
           skippedFiles++;
           continue;
+        }
+        if (needsLongName(tarPath)) {
+          writeLongNameEntry(fd, tarPath);
         }
         const stat = fs.statSync(fullPath);
         const fileSize = stat.size;
@@ -192,20 +240,72 @@ function packDirectory(sourceDir, outputTar) {
     }
   }
 
-  walk(sourceDir, '');
+  /**
+   * Add a source directory to the tar with a custom root prefix.
+   * e.g. addSource('/path/to/current', 'cfmind') puts all files under cfmind/ in the tar.
+   */
+  function addSource(sourceDir, rootPrefix) {
+    // Write root directory entry
+    const rootTarPath = rootPrefix + '/';
+    const rootHeader = createHeader(rootTarPath, 0, 0o755, '5');
+    fs.writeSync(fd, rootHeader);
+    totalDirs++;
+    walk(sourceDir, rootPrefix);
+  }
 
-  // End-of-archive marker: two zero blocks
-  fs.writeSync(fd, ZERO_BLOCK);
-  fs.writeSync(fd, ZERO_BLOCK);
-  fs.closeSync(fd);
-
-  return { totalFiles, totalDirs, skippedFiles };
+  return { fd, addSource, finalize() {
+    // End-of-archive marker: two zero blocks
+    fs.writeSync(fd, ZERO_BLOCK);
+    fs.writeSync(fd, ZERO_BLOCK);
+    fs.closeSync(fd);
+    return { totalFiles, totalDirs, skippedFiles };
+  }};
 }
 
 // ── Main ────────────────────────────────────────────────────────────────────
 
 function main() {
   const projectRoot = path.join(__dirname, '..');
+
+  // Support two modes:
+  // 1. Single dir: node pack-openclaw-tar.cjs [sourceDir] [outputTar]
+  // 2. Windows combined: node pack-openclaw-tar.cjs --win-combined
+  const isWinCombined = process.argv.includes('--win-combined');
+
+  if (isWinCombined) {
+    const outputTar = path.join(projectRoot, 'build-tar', 'win-resources.tar');
+    fs.mkdirSync(path.dirname(outputTar), { recursive: true });
+
+    const sources = [
+      { dir: path.join(projectRoot, 'vendor', 'openclaw-runtime', 'current'), prefix: 'cfmind' },
+      { dir: path.join(projectRoot, 'SKILLs'), prefix: 'SKILLs' },
+      { dir: path.join(projectRoot, 'resources', 'python-win'), prefix: 'python-win' },
+    ];
+
+    console.log(`[pack-openclaw-tar] Packing combined Windows tar: ${outputTar}`);
+    const t0 = Date.now();
+    const packer = packDirectory(null, outputTar);
+
+    for (const { dir, prefix } of sources) {
+      if (!fs.existsSync(dir)) {
+        console.log(`[pack-openclaw-tar]   Skipping ${prefix}: ${dir} not found`);
+        continue;
+      }
+      console.log(`[pack-openclaw-tar]   Adding ${prefix} ← ${dir}`);
+      packer.addSource(dir, prefix);
+    }
+
+    const { totalFiles, totalDirs, skippedFiles } = packer.finalize();
+    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+    const stat = fs.statSync(outputTar);
+    const sizeMB = (stat.size / (1024 * 1024)).toFixed(1);
+    console.log(
+      `[pack-openclaw-tar] Done in ${elapsed}s: ${totalFiles} files, ${totalDirs} dirs, ${skippedFiles} skipped, ${sizeMB} MB`
+    );
+    return;
+  }
+
+  // Single directory mode (original behavior)
   const sourceDir = process.argv[2]
     || path.join(projectRoot, 'vendor', 'openclaw-runtime', 'current');
   const outputTar = process.argv[3]
@@ -220,7 +320,9 @@ function main() {
   console.log(`[pack-openclaw-tar] Output:  ${outputTar}`);
 
   const t0 = Date.now();
-  const { totalFiles, totalDirs, skippedFiles } = packDirectory(sourceDir, outputTar);
+  const packer = packDirectory(null, outputTar);
+  packer.addSource(sourceDir, path.basename(sourceDir));
+  const { totalFiles, totalDirs, skippedFiles } = packer.finalize();
   const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
 
   const stat = fs.statSync(outputTar);

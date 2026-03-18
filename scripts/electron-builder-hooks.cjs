@@ -467,47 +467,52 @@ async function beforePack(context) {
   installSkillDependencies();
 
   if (isWindowsTarget(context)) {
-    // Pack large resource directories into single .tar files for faster NSIS
+    // Pack all large resource directories into a single tar for faster NSIS
     // installation.  NSIS extracts thousands of small files very slowly on NTFS;
-    // single tar archives are extracted by the 7z solid extractor almost instantly,
-    // and we unpack them in the NSIS customInstall macro using Electron's Node runtime.
+    // a single tar archive is extracted by 7z almost instantly, and we unpack
+    // it in the NSIS customInstall macro using Electron's Node runtime.
     const buildTarDir = path.join(__dirname, '..', 'build-tar');
     mkdirSync(buildTarDir, { recursive: true });
 
-    const tarTargets = [
+    const outputTar = path.join(buildTarDir, 'win-resources.tar');
+    const sources = [
       {
         label: 'OpenClaw runtime',
-        source: path.join(__dirname, '..', 'vendor', 'openclaw-runtime', 'current'),
-        output: path.join(__dirname, '..', 'vendor', 'openclaw-runtime', 'cfmind.tar'),
+        dir: path.join(__dirname, '..', 'vendor', 'openclaw-runtime', 'current'),
+        prefix: 'cfmind',
       },
       {
         label: 'SKILLs',
-        source: path.join(__dirname, '..', 'SKILLs'),
-        output: path.join(buildTarDir, 'skills.tar'),
+        dir: path.join(__dirname, '..', 'SKILLs'),
+        prefix: 'SKILLs',
       },
       {
         label: 'Python runtime',
-        source: path.join(__dirname, '..', 'resources', 'python-win'),
-        output: path.join(buildTarDir, 'python-win.tar'),
+        dir: path.join(__dirname, '..', 'resources', 'python-win'),
+        prefix: 'python-win',
       },
     ];
 
-    for (const target of tarTargets) {
-      if (!existsSync(target.source)) {
-        console.warn(`[electron-builder-hooks] Skipping tar for ${target.label}: source not found at ${target.source}`);
+    console.log(`[electron-builder-hooks] Packing combined Windows tar: ${outputTar}`);
+    const t0 = Date.now();
+    const packer = packOpenClawTar(null, outputTar);
+
+    for (const source of sources) {
+      if (!existsSync(source.dir)) {
+        console.warn(`[electron-builder-hooks]   Skipping ${source.label}: source not found at ${source.dir}`);
         continue;
       }
-
-      console.log(`[electron-builder-hooks] Packing ${target.label} into tar...`);
-      const t0 = Date.now();
-      const { totalFiles, totalDirs } = packOpenClawTar(target.source, target.output);
-      const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-      const sizeMB = (statSync(target.output).size / (1024 * 1024)).toFixed(1);
-      console.log(
-        `[electron-builder-hooks] ${target.label} tar packed in ${elapsed}s: `
-        + `${totalFiles} files, ${totalDirs} dirs, ${sizeMB} MB`
-      );
+      console.log(`[electron-builder-hooks]   Adding ${source.prefix} ← ${source.dir}`);
+      packer.addSource(source.dir, source.prefix);
     }
+
+    const { totalFiles, totalDirs, skippedFiles } = packer.finalize();
+    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+    const sizeMB = (statSync(outputTar).size / (1024 * 1024)).toFixed(1);
+    console.log(
+      `[electron-builder-hooks] Combined tar packed in ${elapsed}s: `
+      + `${totalFiles} files, ${totalDirs} dirs, ${skippedFiles} skipped, ${sizeMB} MB`
+    );
   }
 
   if (!isWindowsTarget(context)) {
