@@ -8,6 +8,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Development - starts Vite dev server (port 5175) + Electron app with hot reload
 npm run electron:dev
 
+# Development with OpenClaw engine (clones/builds OpenClaw on first run)
+npm run electron:dev:openclaw
+
 # Build production bundle (TypeScript + Vite)
 npm run build
 
@@ -24,9 +27,14 @@ npm run compile:electron
 npm run dist:mac        # macOS (.dmg)
 npm run dist:win        # Windows (.exe)
 npm run dist:linux      # Linux (.AppImage)
+
+# Build OpenClaw runtime manually
+npm run openclaw:runtime:host   # current platform
 ```
 
 **Requirements**: Node.js >=24 <25. Windows builds require PortableGit (see README.md for setup).
+
+**OpenClaw env vars**: `OPENCLAW_SRC` (default `../openclaw`), `OPENCLAW_FORCE_BUILD=1` (force rebuild), `OPENCLAW_SKIP_ENSURE=1` (skip version checkout).
 
 ## Architecture Overview
 
@@ -41,8 +49,10 @@ Uses strict process isolation with IPC communication.
 **Main Process** (`src/main/main.ts`):
 - Window lifecycle management
 - SQLite storage via `sql.js` (`src/main/sqliteStore.ts`)
-- Cowork session runner (`src/main/libs/coworkRunner.ts`) - executes Claude Agent SDK
-- IPC handlers for store, cowork, and API operations
+- Agent engine routing (`src/main/libs/agentEngine/coworkEngineRouter.ts`) - dispatches to `claudeRuntimeAdapter.ts` (built-in) or `openclawRuntimeAdapter.ts` (OpenClaw)
+- IM gateways (`src/main/im/`) - DingTalk, Feishu, Telegram, Discord, NetEase IM
+- Skill management (`src/main/skillManager.ts`)
+- IPC handlers for store, cowork, and API operations (40+ channels)
 - Security: context isolation enabled, node integration disabled, sandbox enabled
 
 **Preload Script** (`src/main/preload.ts`):
@@ -60,9 +70,17 @@ src/main/
 ├── main.ts              # Entry point, IPC handlers
 ├── sqliteStore.ts       # SQLite database (kv + cowork tables)
 ├── coworkStore.ts       # Cowork session/message CRUD operations
+├── skillManager.ts      # Skill loading and management
+├── im/                  # IM gateway integrations (DingTalk/Feishu/Telegram/Discord)
 └── libs/
+    ├── agentEngine/
+    │   ├── coworkEngineRouter.ts    # Routes to built-in or OpenClaw runtime
+    │   ├── claudeRuntimeAdapter.ts  # Built-in Claude Agent SDK adapter
+    │   └── openclawRuntimeAdapter.ts # OpenClaw gateway adapter
     ├── coworkRunner.ts          # Claude Agent SDK execution engine
     ├── claudeSdk.ts             # SDK loader utilities
+    ├── openclawEngineManager.ts # OpenClaw runtime lifecycle (install/start/status)
+    ├── openclawConfigSync.ts    # Syncs cowork config → OpenClaw config files
     ├── coworkMemoryExtractor.ts # Extracts memory changes from conversations
     └── coworkMemoryJudge.ts     # Validates memory candidates with scoring/LLM
 
@@ -103,8 +121,15 @@ SKILLs/                  # Custom skill definitions for cowork sessions
 The Cowork feature provides AI-assisted coding sessions:
 
 **Execution Modes** (`CoworkExecutionMode`):
-- `auto` - Automatically choose based on context
-- `local` - Run tools directly on the local machine
+- `auto` - Automatically choose based on context (OpenClaw: `sandbox.mode=non-main`)
+- `local` - Run tools directly on the local machine (OpenClaw: `sandbox.mode=off`)
+- `sandbox` - Full sandbox isolation (OpenClaw: `sandbox.mode=all`)
+
+**Agent Engines** (configured via `agentEngine` in cowork config):
+- `yd_cowork` - Built-in Claude Agent SDK runner (`claudeRuntimeAdapter.ts`)
+- `openclaw` - OpenClaw gateway (`openclawRuntimeAdapter.ts`); requires the bundled OpenClaw runtime to be running. Engine lifecycle managed by `OpenClawEngineManager` with states: `not_installed → ready → starting → running | error`
+
+Both engines expose identical stream events through `CoworkEngineRouter`, so the renderer is engine-agnostic. Engine-specific IPC: `openclaw:engine:*` channels manage runtime lifecycle separately from `cowork:*` session channels.
 
 **Memory System**: Automatically extracts and manages user memories from conversations:
 - `coworkMemoryExtractor.ts` - Detects explicit remember/forget commands (Chinese/English) and implicitly extracts personal facts using signal patterns (profile, preferences, ownership). Uses guard levels (`strict`/`standard`/`relaxed`) with confidence thresholds.
@@ -161,9 +186,11 @@ The Artifacts feature provides rich preview of code outputs similar to Claude's 
 ### Configuration
 
 - App config stored in SQLite `kv` table
-- Cowork config stored in `cowork_config` table (workingDirectory, systemPrompt, executionMode)
+- Cowork config stored in `cowork_config` table (workingDirectory, systemPrompt, executionMode, **agentEngine**)
 - Cowork sessions and messages stored in `cowork_sessions` and `cowork_messages` tables
+- Scheduled tasks stored in `scheduled_tasks` table (cron expressions, task content)
 - Database file: `lobsterai.sqlite` in user data directory
+- OpenClaw pinned version declared in `package.json` under `"openclaw": { "version": "...", "repo": "..." }`; update the version field and re-run to upgrade
 
 ### TypeScript Configuration
 
@@ -196,9 +223,42 @@ The Artifacts feature provides rich preview of code outputs similar to Claude's 
   - Settings: theme switching, language switching
 - Keep console warnings/errors clean; lint via `npm run lint` before submitting.
 
+## Internationalization (i18n)
+
+- **Never hardcode user-visible strings.** All UI text, labels, messages, and titles must go through the i18n system.
+- **Renderer process**: use `t('key')` from `src/renderer/services/i18n.ts`. Add new keys to both the `zh` and `en` sections in that file.
+- **Main process** (tray menu, session titles, notifications, etc.): use `t('key')` from `src/main/i18n.ts`. Add new keys to both the `zh` and `en` sections in that file.
+- When adding a new key, always provide translations for **both** languages. If unsure of a translation, leave a comment like `// TODO: translate` rather than omitting the key.
+- Error messages shown only in DevTools/logs (not visible to users) are exempt.
+
 ## Commit & Pull Request Guidelines
 
-- Recent history uses conventional prefixes like `feat:`, `refactor:`, and `chore:`; older commits include `feature:` and `Initial commit`.
-- Prefer `type: short imperative summary` (e.g., `feat: add artifact toolbar actions`).
+**All commit messages must follow the [Conventional Commits](https://www.conventionalcommits.org/) spec and be written in English.**
+
+### Commit Message Format
+
+```
+type(scope): short imperative summary
+
+Optional body in English markdown explaining *why* (not what).
+
+Optional footer: BREAKING CHANGE: ..., Closes #123, etc.
+```
+
+**Types**: `feat`, `fix`, `refactor`, `chore`, `docs`, `test`, `perf`, `style`, `ci`, `build`, `revert`
+
+**Rules**:
+- Subject line: lowercase, imperative mood, no trailing period, ≤72 chars
+- Scope (optional): the affected area, e.g. `feat(cowork):`, `fix(im):`
+- Body and footer must be in English markdown
+- Breaking changes: add `!` after type/scope (`feat!:`) **and** a `BREAKING CHANGE:` footer
+
+**Examples**:
+```
+feat(cowork): add streaming progress indicator
+fix(sqlite): prevent duplicate session insert on retry
+chore: bump version to 2026.3.18
+```
+
 - PRs should include a concise description, linked issue if applicable, and screenshots for UI changes.
 - Call out any Electron-specific behavior changes (IPC, storage, windowing) in the PR description.
